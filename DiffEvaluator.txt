@@ -1,0 +1,233 @@
+  //////////////////////////////////////////////////////////////////////
+  // DiffEvaluator for ImageJ
+  // by Thomas Gänsler
+  //
+  // todo:
+  // - save option for existing overlays
+  // - add instructions to install
+  //
+  // issues:
+  // - labels are always added on the right side, because
+  //   setJustification() doesn't work on overlays.
+  //
+  // ideas:
+  // - sanitize input for font size and spacing
+  // - prompt as function to reduce redundancy
+  // - have an (third) option to define the center by yourself
+  //////////////////////////////////////////////////////////////////////
+  
+var roiCount = -1;
+var roiDiffCenterID = -1;
+
+function roiRenameLast(name) {
+	roiCount = roiManager("Count");
+	roiManager("select", roiCount-1);
+	roiManager("Rename", name);
+}
+
+
+macro "TG_Circle [f1]"{
+	
+	//initalize
+	debugvar = 0;  // set to "1" to have some additional info printed to the logfile
+	run("Select None");
+	
+	//convert to inverse nanometers from (inverse) meters if needed (TIA files, imported by TIA Reader)
+	getPixelSize(unit, pixelWidth, pixelHeight); 
+		if(debugvar){print("pixelWidth: "+pixelWidth+"; pixelHeight: "+pixelHeight+"; unit: "+unit);}
+	if(unit == "m") {
+		newScale = pixelWidth/pow(10,9);  //mathematically not correct (no inverse calculation), but original unit "m" is wrong, should be "1/m"; pow(10,9) == 10^9
+		run("Set Scale...", "distance=1 known="+newScale+" pixel=1 unit=1/nm");	
+	}
+	getPixelSize(unit, pixelWidth, pixelHeight);  // converted scale
+		if(debugvar){print("pixelWidth: "+pixelWidth+"; pixelHeight: "+pixelHeight+"; unit: "+unit);}
+ 
+	Dialog.create("Define Center");
+	Dialog.addMessage("In order to define the center of the diffraction pattern, you can\neither use the circle tool (hold Shift to use it) or define points\non a circle. A circle will be fitted to those points.");
+	radioOptionsTGc = newArray("Draw Circle","Set Points");
+	Dialog.addRadioButtonGroup("Method:", radioOptionsTGc, 1, 2, "Draw Circle");
+	Dialog.addCheckbox("Enhance contrast", 1)
+	Dialog.show();
+	method = Dialog.getRadioButton();
+	contrast = Dialog.getCheckbox();
+	
+	if(contrast == 1) { run("Enhance Contrast", "saturated=0.3"); }
+	
+	if(method=="Set Points") {
+		setTool("multipoint");
+		waitForUser("Waiting for selection", "Select the points that will define the circle, then press OK.");
+	} else {
+		setTool("oval");
+		waitForUser("Waiting for selection", "Draw the circle, then press OK.\nHold Shift to change the oval drawing tool to a circle drawing tool.");
+	}
+	
+	selType = selectionType();
+	
+	if(method=="Set Points") {
+		if(selType != 10) { exit("Error: Selection is not a multipoint selection."); }
+		run("Fit Circle");
+	} else {
+		if(selType != 1) { exit("Error: Selection is not an oval selection."); }
+		getSelectionBounds(xSel, ySel, widthSel, heightSel);
+		if(widthSel != heightSel) { exit("Error: The provided selection was not circular."); }
+	}
+	
+	roiManager("Add");
+	roiRenameLast("Diff_Circle");
+
+	// measure center of circle
+	run("Set Measurements...", "centroid redirect=None decimal=8");
+	run("Measure");	// writes center of circle in calibrated units to measurement result table
+	xCenter = getResult("X");
+	yCenter = getResult("Y"); //Default: last line in results table
+		if(debugvar){print("xCenter: "+xCenter+"; yCenter: "+yCenter);}
+
+	// add center as point in ROI manager
+	toUnscaled(xCenter); // recalculate pixels from calibrated units in order to display/save the center
+	toUnscaled(yCenter);
+		if(debugvar){print("xCenter: "+xCenter+"; yCenter: "+yCenter);}
+	makePoint(xCenter, yCenter);
+	roiManager("Add");
+	roiRenameLast("Diff_Center");
+	
+	// save ROI index of center point to global variable
+	roiDiffCenterID = roiCount-1; //roiCount is set in function roiRenameLast
+}
+
+macro "TG_Distance [f2]" {
+	// initialize
+	debugvar = 0;  // set to "1" to have some additional info printed to the logfile
+	if(roiDiffCenterID == -1) { exit("Error: No center point found. Please use the according macro to define the center."); }
+	
+	
+	// default variables
+	overlayColor = "#BFFF00";
+	fontPt = 0.02*0.75*getHeight(); // size of font, relative to image height; converted to pt (1px = 0.75pt)
+	xSpacing = 0.01*getWidth(); // spacing of the lable to the point, relative to image width
+	ySpacing = fontPt*0.4/0.75; // spacing of the lable to the point, relative to image height
+	// defaultPosition = "right";
+	
+	// dialog function in order to reduce redundancy
+	function overlayDialog(isOverlay) {
+		if(isOverlay){
+			Dialog.create("Existing Overlay");
+			Dialog.addMessage("There is already an existing overlay.\n'Add' will add the new points to the overlay.\nThe overlay will be overwritten if you choose 'Discard'.");
+			radioOptionsOverlay = newArray("Add","Discard");
+			Dialog.addRadioButtonGroup("How do you want to proceed?", radioOptionsOverlay, 2, 1, "Add");  // Add = default
+		} else {
+			Dialog.create("New Overlay");
+			Dialog.addMessage("A new overlay will be created that contains the points you specify, along with the measured d-spacings.");
+		}
+		Dialog.addMessage("You can specify some parameters for the labeling below.\nDefault values:\n- Font size: 2% of image height\n- x-Spacing: 1% of image width\n- y-Spacing: 40% of font size");	
+		Dialog.addString("Color: ", overlayColor);
+		Dialog.addNumber("Font size: ", fontPt, 0, 5, "pt");
+		Dialog.addNumber("x-Spacing: ", xSpacing, 0, 10, "px");
+		Dialog.addNumber("y-Spacing: ", ySpacing, 0, 10, "px");
+		//radioOptionsLabelPosition = newArray("top", "left", "bottom", "right");
+		//Dialog.addRadioButtonGroup("Position: ", radioOptionsLabelPosition, 2, 2, defaultPosition);
+		Dialog.addMessage("If you need to move labels by hand, use 'Image > Overlay > To ROI Manager' after you're finished.");
+		
+		Dialog.show();
+		
+		if(isOverlay){overlayPrompt = Dialog.getRadioButton();}
+		overlayColor = Dialog.getString();
+		fontPt = Dialog.getNumber();
+		xSpacing = Dialog.getNumber();
+		ySpacing = Dialog.getNumber();
+		//labelPos = Dialog.getRadioButton();
+	}
+
+	// check if there is an overlay already
+	if(getInfo("overlay") != ""){
+		if(debugvar){print("overlay detected");}
+		
+		overlayDialog(1);
+		
+		if(overlayPrompt == "Discard"){
+			Overlay.remove;
+		}
+		
+		// Option "save" currently not included, because it deletes all items currently in the ROI manager. Center point has to be saved in this case specifially to know the index or coordinates
+		// if(overlayPrompt == "Save"){
+		//	roiManager("Deselect");
+		//	run("To ROI Manager");
+		// }
+	} else {
+		if(debugvar){print("no overlay detected");}
+		overlayDialog(0);
+	}
+	
+	// set options for resulting strings
+	setFont("SanSerif", fontPt);
+	setColor(overlayColor);
+	
+	
+	// reading the coordinates of the center point
+	roiManager("select",roiDiffCenterID);
+	getSelectionCoordinates(xArr,yArr);
+	xCenter = xArr[0];
+	yCenter = yArr[0];
+		if(debugvar){print("xCenter: "+xCenter+"; yCenter: "+yCenter);}
+	
+	getPixelSize(unit, pixelWidth, pixelHeight);
+		if(debugvar){print("pixelWidth: "+pixelWidth+"; pixelHeight: "+pixelHeight+"; unit: "+unit);}
+	
+	// user input for points of interest
+	setTool("multipoint");
+	run("Select None");
+	waitForUser("Select all reflexes that you want to evaluate, then press OK.\nHold Ctrl and click on a point to remove it.");
+	
+	selType = selectionType();
+	if(selType != 10) { exit("Error: You didn't specify any points."); }
+	
+	// adding the points as single ROIs and displaying the distance to the center
+	getSelectionCoordinates(xArr,yArr);  // resulting xArr and yArr are an array and in units of pixels
+	numberOfReflexes = xArr.length;
+	for(i=0; i<numberOfReflexes; i++) {
+		// add single point as ROI
+		makePoint(xArr[i],yArr[i]);
+		roiManager("Add");
+		roiRenameLast("Reflex"+i);
+		roiLastReflexID = roiCount-1; // set in roiRenameLast
+		
+		// draw a line to the center and measure distance
+		makeLine(xArr[i],yArr[i],xCenter,yCenter);
+		run("Measure");
+		lengthCal = getResult("Length");  // in calibrated units
+		
+		// conversation to Angstroms and output to logfile
+		if(unit == "1/nm") {
+			lengthCal = 10/lengthCal;
+			print("Reflex "+i+": d="+lengthCal +" Ang");
+		} else {	
+			print("Reflex "+i+": d="+lengthCal +" "+ unit);
+		}
+		
+		// add point to overlay
+		roiManager("select", roiLastReflexID);
+		Overlay.addSelection(overlayColor);
+
+		// add label with calculated d-spacing
+		Overlay.drawString(lengthCal, xArr[i]+xSpacing, yArr[i]+ySpacing);
+		
+		// setJustification has no effect on Overlay.drawString
+		//if(labelPos == "right"){
+		//	setJustification("left");
+		//	Overlay.drawString(lengthCal, xArr[i]+xoffset, yArr[i]+yoffset);
+		//} else if (labelPos == "left") {
+		//	setJustification("right");
+		//	Overlay.drawString(lengthCal, xArr[i]-xoffset, yArr[i]+yoffset);
+		//} else if (labelPos == "top") {
+		//	setJustification("center");
+		//	Overlay.drawString(lengthCal, xArr[i], yArr[i]-xoffset);
+		//} else if (labelPos == "bottom") {
+		//	setJustification("center");
+		//	Overlay.drawString(lengthCal, xArr[i], yArr[i]+xoffset+fontHeight);
+		//}
+	}
+	
+	// add center to overlay
+	roiManager("select", roiDiffCenterID);
+	Overlay.addSelection;
+	run("Select None");
+}
