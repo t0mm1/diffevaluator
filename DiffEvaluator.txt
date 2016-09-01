@@ -1,6 +1,7 @@
   //////////////////////////////////////////////////////////////////////
   // DiffEvaluator for ImageJ
   // by Thomas Gänsler
+  // v1.0-20160831
   //
   // todo:
   // - save option for existing overlays
@@ -9,11 +10,13 @@
   // issues:
   // - labels are always added on the right side, because
   //   setJustification() doesn't work on overlays.
+  // - sometimes the circle in TG_circle is added to the overlay
+  // - measurement window opens when getting d-spacing, but the alternative, List.setMeasurements, is very slow
   //
   // ideas:
   // - sanitize input for font size and spacing
-  // - prompt as function to reduce redundancy
   // - have an (third) option to define the center by yourself
+  // - hide measurement window (List.setMeasurements;)
   //////////////////////////////////////////////////////////////////////
   
 var roiCount = -1;
@@ -26,10 +29,20 @@ function roiRenameLast(name) {
 }
 
 
+var firstRun = 1;
+var debugvar = 0;  // set to "1" to have some additional info printed to the logfile
+
+// initalizing global variables, will get overwritten anyways
+var overlayColor = "#BFFF00";
+var fontPt = 60;
+var xSpacing = 50;
+var ySpacing = 50;
+var overlayPrompt = "Add";
+
+
 macro "TG_Circle [f1]"{
 	
 	//initalize
-	debugvar = 0;  // set to "1" to have some additional info printed to the logfile
 	run("Select None");
 	
 	//convert to inverse nanometers from (inverse) meters if needed (TIA files, imported by TIA Reader)
@@ -77,9 +90,9 @@ macro "TG_Circle [f1]"{
 
 	// measure center of circle
 	run("Set Measurements...", "centroid redirect=None decimal=8");
-	run("Measure");	// writes center of circle in calibrated units to measurement result table
-	xCenter = getResult("X");
-	yCenter = getResult("Y"); //Default: last line in results table
+	List.setMeasurements;	// writes center of circle in calibrated units to measurement result table. Better than 'run("Measure")' because it doesn't open the measurement window
+	xCenter = List.getValue("X");
+	yCenter = List.getValue("Y"); //Default: last line in results table
 		if(debugvar){print("xCenter: "+xCenter+"; yCenter: "+yCenter);}
 
 	// add center as point in ROI manager
@@ -94,26 +107,28 @@ macro "TG_Circle [f1]"{
 	roiDiffCenterID = roiCount-1; //roiCount is set in function roiRenameLast
 }
 
-macro "TG_Distance [f2]" {
+macro "TG_Distance [f2]" {	
 	// initialize
-	debugvar = 0;  // set to "1" to have some additional info printed to the logfile
 	if(roiDiffCenterID == -1) { exit("Error: No center point found. Please use the according macro to define the center."); }
-	
-	
-	// default variables
-	overlayColor = "#BFFF00";
-	fontPt = 0.02*0.75*getHeight(); // size of font, relative to image height; converted to pt (1px = 0.75pt)
-	xSpacing = 0.01*getWidth(); // spacing of the lable to the point, relative to image width
-	ySpacing = fontPt*0.4/0.75; // spacing of the lable to the point, relative to image height
-	// defaultPosition = "right";
+	if(firstRun) {
+		// default variables
+		overlayColor = "#BFFF00";
+		fontPt = 0.02*0.75*getHeight(); // size of font, relative to image height; converted to pt (1px = 0.75pt)
+		xSpacing = 0.01*getWidth(); // spacing of the lable to the point, relative to image width
+		ySpacing = fontPt*0.4/0.75; // spacing of the lable to the point, relative to image height
+		// defaultPosition = "right";
+		
+		firstRun = 0;
+	}
 	
 	// dialog function in order to reduce redundancy
 	function overlayDialog(isOverlay) {
 		if(isOverlay){
+			if(debugvar){print("overlay detected 1st if");}
 			Dialog.create("Existing Overlay");
 			Dialog.addMessage("There is already an existing overlay.\n'Add' will add the new points to the overlay.\nThe overlay will be overwritten if you choose 'Discard'.");
 			radioOptionsOverlay = newArray("Add","Discard");
-			Dialog.addRadioButtonGroup("How do you want to proceed?", radioOptionsOverlay, 2, 1, "Add");  // Add = default
+			Dialog.addRadioButtonGroup("How do you want to proceed?", radioOptionsOverlay, 2, 1, "Add");  // always default to "Add", even if "Discard" was used last
 		} else {
 			Dialog.create("New Overlay");
 			Dialog.addMessage("A new overlay will be created that contains the points you specify, along with the measured d-spacings.");
@@ -129,7 +144,10 @@ macro "TG_Distance [f2]" {
 		
 		Dialog.show();
 		
-		if(isOverlay){overlayPrompt = Dialog.getRadioButton();}
+		if(isOverlay){
+			if(debugvar){print("overlay detected 2nd if");}
+			overlayPrompt = Dialog.getRadioButton();
+		}
 		overlayColor = Dialog.getString();
 		fontPt = Dialog.getNumber();
 		xSpacing = Dialog.getNumber();
